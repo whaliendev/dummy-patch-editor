@@ -1,17 +1,5 @@
 "use strict";
-function domReady(condition = ["complete", "interactive"]) {
-  return new Promise((resolve) => {
-    if (condition.includes(document.readyState)) {
-      resolve(true);
-    } else {
-      document.addEventListener("readystatechange", () => {
-        if (condition.includes(document.readyState)) {
-          resolve(true);
-        }
-      });
-    }
-  });
-}
+const { ipcRenderer, contextBridge } = require("electron");
 const safeDOM = {
   append(parent, child) {
     if (!Array.from(parent.children).find((e) => e === child)) {
@@ -71,9 +59,37 @@ function useLoading() {
   };
 }
 const { appendLoading, removeLoading } = useLoading();
-domReady().then(appendLoading);
-window.onmessage = (ev) => {
-  ev.data.payload === "removeLoading" && removeLoading();
-};
-setTimeout(removeLoading, 4999);
+setTimeout(removeLoading, 100);
+contextBridge.exposeInMainWorld("electron", {
+  selectDirectory: async () => {
+    const result = await ipcRenderer.invoke("select-directory");
+    if (result.success) {
+      return result.directory;
+    }
+    throw new Error(result.error);
+  },
+  loadConflictSources: (repoPath) => {
+    return new Promise((resolve, reject) => {
+      const onSuccess = (event, data) => {
+        ipcRenderer.removeListener("load-conflict-sources-success", onSuccess);
+        ipcRenderer.removeListener("load-conflict-sources-error", onError);
+        resolve(data);
+      };
+      const onError = (event, error) => {
+        ipcRenderer.removeListener("load-conflict-sources-success", onSuccess);
+        ipcRenderer.removeListener("load-conflict-sources-error", onError);
+        reject(error);
+      };
+      ipcRenderer.send("load-conflict-sources", repoPath);
+      ipcRenderer.once("load-conflict-sources-success", onSuccess);
+      ipcRenderer.once("load-conflict-sources-error", onError);
+    });
+  },
+  joinPath: (...paths) => {
+    return ipcRenderer.invoke("join-path", ...paths);
+  },
+  readFile: (filePath) => {
+    return ipcRenderer.invoke("read-file", filePath);
+  }
+});
 //# sourceMappingURL=index.js.map

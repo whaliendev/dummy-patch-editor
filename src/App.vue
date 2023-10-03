@@ -1,105 +1,268 @@
 <script setup lang="ts">
-import LogoViewLink from './components/LogoViewLink.vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
+import * as monaco from 'monaco-editor';
+import { useDark } from '@vueuse/core';
+import EditorNotification from './components/EditorNotification.vue';
+import FileList from './components/FileList.vue';
+import { useTopBarStore } from './stores/top-bar';
+import { findConflictBlocks, getConflictBlockDecorations } from './utils/conflicts';
 
-console.log(
-  '[App.vue]',
-  `Hello world from Electron ${process.versions.electron}!`
+const topBarStore = useTopBarStore();
+
+/// dark theme
+const isDark = useDark();
+const toggleDark = () => {
+  isDark.value = !isDark.value;
+  editor.updateOptions({ theme: isDark.value ? 'vs-dark' : 'vs-light' });
+};
+
+/// load repo
+// indicator for left panel FileList component
+const projectSelected = ref(false);
+// conflicts loading status
+const conflictSources = ref<Array<string>>([]);
+// indicator for left panel FileList component loading status
+const isLoading = ref(false);
+const selectDirectory = async () => {
+  try {
+    const directory = await window.electron.selectDirectory();
+    console.log(directory);
+    topBarStore.setDirectory(directory);
+    projectSelected.value = true;
+
+    isLoading.value = true;
+
+    await loadConflictSources();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } catch (error: any) {
+    triggerNotification(error.message);
+    topBarStore.setDirectory('');
+    projectSelected.value = false;
+  }
+};
+
+const selectedFileContent = ref<Array<string>>([]);
+const handleFileSelected = async (relativePath: string) => {
+  try {
+    const fullPath = await window.electron.joinPath(
+      topBarStore.directory,
+      relativePath
+    );
+    const content = await window.electron.readFile(fullPath);
+    selectedFileContent.value = content;
+    setEditorContent(content.join('\n'));
+
+    highlightConflictBlocks(content);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } catch (error: any) {
+    triggerNotification(`Error reading file: ${error.message}`);
+  }
+};
+
+/// monaco editor
+const editorContainer = ref<HTMLElement | null>(null);
+const code = ref(
+  [
+    '#include <iostream>',
+    '',
+    'int main() {',
+    '  std::cout << "Hello world!" << std::endl;',
+    '  return 0;',
+    '}',
+  ].join('\n')
 );
 
-const isDark = useDark();
-const toggleDark = useToggle(isDark);
+let editor: monaco.editor.IStandaloneCodeEditor;
 
-const { t, availableLocales, locale } = useI18n();
+onMounted(() => {
+  isDark.value = false;
+  if (!editorContainer.value) return;
+  editor = monaco.editor.create(editorContainer.value, {
+    value: code.value,
+    language: 'cpp',
+    theme: 'vs-light',
+    formatOnPaste: true,
+  });
 
-function toggleLocales() {
-  // change to some real logic
-  const locales = availableLocales;
-  locale.value = locales[(locales.indexOf(locale.value) + 1) % locales.length];
-}
+  editor.onDidChangeModelContent(() => {
+    code.value = editor.getValue();
+  });
+
+  if (topBarStore.directory) {
+    projectSelected.value = true;
+    isLoading.value = true;
+    loadConflictSources();
+  }
+
+  window.addEventListener('resize', handleResize);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize);
+});
+
+onBeforeUnmount(() => {
+  editor?.dispose();
+});
+
+/// util functions
+const setEditorContent = (newContent: string) => {
+  code.value = newContent;
+  if (editor) {
+    editor.setValue(newContent);
+  }
+};
+
+const showNotification = ref(false);
+const notificationMessage = ref('');
+const triggerNotification = (message: string) => {
+  notificationMessage.value = message;
+  showNotification.value = true;
+  setTimeout(() => {
+    showNotification.value = false;
+  }, 5000);
+};
+
+const loadConflictSources = async () => {
+  try {
+    console.log('Loading conflict sources...');
+    const files = await window.electron.loadConflictSources(
+      topBarStore.directory
+    );
+    console.log(files);
+    conflictSources.value = files;
+    isLoading.value = false;
+  } catch (error) {
+    console.error('Error loading conflict sources:', error);
+    triggerNotification(`Error loading conflict sources: ${error}`);
+    isLoading.value = false;
+    topBarStore.setDirectory('');
+    projectSelected.value = false;
+  }
+
+  if (conflictSources.value.length > 0) {
+    await handleFileSelected(conflictSources.value[0]);
+  }
+};
+
+const handleResize = () => {
+  editor.layout();
+};
+
+const highlightConflictBlocks = (content: Array<string>) => {
+  const conflictBlocks = findConflictBlocks(content);
+  // console.log(conflictBlocks);
+  const newDecorations = getConflictBlockDecorations(conflictBlocks);
+  const oldDecorations =
+    editor
+      .getModel()
+      ?.getAllDecorations()
+      .map((decoration) => decoration.id) || [];
+  editor.getModel()?.deltaDecorations(oldDecorations, newDecorations);
+  // console.log(newDecorations);
+  // editor.createDecorationsCollection(newDecorations);
+};
 </script>
 
 <template>
   <div
     id="app"
-    class="max-w-5xl mx-auto px-4 py-5 dark:bg-slate-800 dark:text-gray-200 min-h-screen"
+    class="flex flex-col h-screen"
+    :class="{ 'dark:bg-gray-800 dark:text-white': isDark }"
   >
-    <div class="mb-6 flex items-center justify-between">
-      <button @click="toggleDark()">
-        <span class="ml-2">
-          {{ isDark ? `🌙 ${t('common.dark')}` : `💡 ${t('common.light')}` }}
-          {{ t('common.theme') }}
-        </span>
+    <!-- 顶部输入框区域 -->
+    <div class="flex items-center p-4 space-x-4 border-b border-gray-300">
+      <label for="project" class="text-gray-500 flex-shrink-0"
+        >选择项目：</label
+      >
+      <input
+        id="project"
+        v-model="topBarStore.directory"
+        type="text"
+        class="flex-1 p-1 border rounded-md text-gray-600 text-sm flex-shrink"
+        placeholder="点击选择目录"
+        @click="selectDirectory"
+      />
+
+      <label for="target" class="text-gray-500 flex-shink-0">target: </label>
+      <input
+        id="target"
+        v-model="topBarStore.target"
+        type="text"
+        class="flex-1 p-1 border rounded-md text-gray-600 text-sm flex-shrink"
+        placeholder="输入文本"
+      />
+
+      <label for="source" class="text-gray-500 flex-shink-0">source: </label>
+      <input
+        id="source"
+        v-model="topBarStore.source"
+        type="text"
+        class="flex-1 p-1 border rounded-md text-gray-600 text-sm flex-shrink"
+        placeholder="输入文本"
+      />
+
+      <button
+        class="px-1.5 py-1 bg-green-400 text-white rounded-md flex-shrink-0"
+      >
+        post ms
       </button>
 
-      <button @click="toggleLocales">
-        <span>{{ t('common.language') }}: </span>
-        <span class="text-green-600">{{ locale }}</span>
+      <button class="flex-shrink-0" @click="toggleDark">
+        {{ isDark ? '🌙 dark' : '💡 light' }}
       </button>
     </div>
 
-    <div class="flex flex-wrap gap-5 items-center justify-center">
-      <LogoViewLink
-        href="https://www.electronjs.org/"
-        img-src="electron.svg"
-        img-alt="Electron logo"
-      />
-      <LogoViewLink
-        href="https://vitejs.dev/"
-        img-src="vite.svg"
-        img-alt="Vite logo"
-      />
-      <LogoViewLink
-        href="https://vuejs.org/"
-        img-src="vue.svg"
-        img-alt="Vue logo"
-      />
-      <LogoViewLink
-        href="https://pinia.vuejs.org/"
-        img-src="pinia.svg"
-        img-alt="Pinia logo"
-      />
-      <LogoViewLink
-        href="https://tailwindcss.com/"
-        img-src="tailwindcss.png"
-        img-alt="Tailwind CSS logo"
-      />
-      <LogoViewLink
-        href="https://eslint.org/"
-        img-src="eslint.png"
-        img-alt="Eslint logo"
-      />
-      <LogoViewLink
-        href="https://prettier.io/"
-        img-src="prettier.png"
-        img-alt="Prettier logo"
-      />
-      <LogoViewLink
-        href="https://vueuse.org/"
-        img-src="vueuse.svg"
-        img-alt="VueUse logo"
-      />
-    </div>
+    <div class="flex h-screen">
+      <!-- 左侧文件列表 -->
+      <div class="relative w-1/5 min-w-[200px] max-w-[320px] border-r h-full">
+        <div
+          v-if="!projectSelected"
+          class="absolute top-1/4 left-1/2 transform -translate-x-1/2 text-gray-500"
+        >
+          未选择项目
+        </div>
+        <div v-else class="h-full">
+          <FileList
+            :files="conflictSources"
+            :is-loading="isLoading"
+            @file-selected="handleFileSelected"
+          />
+        </div>
+      </div>
 
-    <p class="text-center mt-6 flex items-center justify-center">
-      <router-link
-        to="/home"
-        class="block mx-4 px-2 py-1 border-b-2 border-green-300 hover:border-green-500 transition"
-      >
-        {{ t('homepage.goToHome') }}
-      </router-link>
-      <router-link
-        to="/about"
-        class="block mx-4 px-2 py-1 border-b-2 border-green-300 hover:border-green-500 transition"
-      >
-        {{ t('aboutPage.goToAbout') }}
-      </router-link>
-    </p>
-
-    <router-view class="my-5" />
-
-    <div class="flex items-center justify-center mt-4">
-      <span v-html="t('footer.placeStaticFiles')" />
-      <img src="/node.svg" alt="Node logo" class="w-10" />
+      <!-- 右侧 Monaco Editor -->
+      <div
+        ref="editorContainer"
+        class="flex-grow h-full"
+        style="width: 100%; height: 100%"
+      ></div>
     </div>
   </div>
+
+  <EditorNotification
+    v-if="showNotification"
+    :message="notificationMessage"
+    @close="showNotification = false"
+  />
 </template>
+
+<style scoped>
+#app {
+  height: 100vh;
+}
+
+:global(.conflicts-ours) {
+  background: lightblue;
+}
+
+:global(.conflicts-base) {
+  background: lightgrey;
+}
+
+:global(.conflicts-theirs) {
+  background: pink;
+}
+</style>

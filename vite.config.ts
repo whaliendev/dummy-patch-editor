@@ -6,6 +6,7 @@ import AutoImport from 'unplugin-auto-import/vite';
 import electron from 'vite-plugin-electron';
 import renderer from 'vite-plugin-electron-renderer';
 import pkg from './package.json';
+import monacoEditorPlugin from 'vite-plugin-monaco-editor';
 
 rmSync('dist-electron', { recursive: true, force: true });
 
@@ -88,16 +89,36 @@ export default defineConfig({
     renderer({
       nodeIntegration: true,
     }),
-  ],
 
+    monacoEditorPlugin({
+      languageWorkers: ['editorWorkerService'],
+    }),
+  ],
   server: process.env.VSCODE_DEBUG
     ? (() => {
         const url = new URL(pkg.debug.env.VITE_DEV_SERVER_URL);
         return {
           host: url.hostname,
           port: +url.port,
+          proxy: {
+            '/api': {
+              target: 'http://127.0.0.1:18080/api',
+              changeOrigin: true,
+              rewrite: (path) => path.replace(/^\/api/, ''),
+            },
+          },
         };
       })()
-    : undefined,
+    : {
+      port: 5173,
+      host: '127.0.0.1',
+      proxy: {
+        '/api': {
+          target: 'http://127.0.0.1:18080/api',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api/, ''),
+        },
+      },
+    },
   clearScreen: false,
 });
