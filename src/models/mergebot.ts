@@ -4,3 +4,8 @@ export interface ConflictBlock {
   theirMarkerLineNo: number;
   endMarkerLineNo: number;
 }
+
+export interface MergeScenario {
+  ours: string;
+  theirs: string;
+}

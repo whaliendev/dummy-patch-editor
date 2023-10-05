@@ -6,6 +6,8 @@ import EditorNotification from './components/EditorNotification.vue';
 import FileList from './components/FileList.vue';
 import { useTopBarStore } from './stores/top-bar';
 import { findConflictBlocks, getConflictBlockDecorations } from './utils/conflicts';
+import { postMergeScenario, getResolution } from './api/mergebot'
+import type { MergeScenarioPayload, ResolutionVO, ResolutionPayload } from './api/mergebot'
 
 const topBarStore = useTopBarStore();
 
@@ -59,6 +61,42 @@ const handleFileSelected = async (relativePath: string) => {
   } catch (error: any) {
     triggerNotification(`Error reading file: ${error.message}`);
   }
+
+  let resolutionVO: ResolutionVO;
+  try {
+    const resolutionPayload = {
+      ms: {
+        ours: topBarStore.target,
+        theirs: topBarStore.source,
+      },
+      path: topBarStore.directory,
+      file: relativePath,
+    } as ResolutionPayload;
+    resolutionVO = getResolution(resolutionPayload);
+  } catch (error) {
+    triggerNotification(`Error post merge scenario: ${error.message}`);
+  }
+
+  // add decorations based on resolutionVO, unifying the format of patch and resolution
+  // margin glyph across multiple lines, hover message,
+};
+
+/// post merge scenario
+const postMergeScenarioHandler = async () => {
+  try {
+    const scenario = {
+      ms: {
+        ours: topBarStore.target,
+        theirs: topBarStore.source,
+      },
+      path: topBarStore.directory,
+    } as MergeScenarioPayload;
+    postMergeScenario(scenario);
+    triggerNotification('post merge scenario successfully!')
+  } catch (error) {
+    // console.error('Error post merge scenario:', error);
+    triggerNotification(`Error post merge scenario: ${error.message}`);
+  }
 };
 
 /// monaco editor
@@ -75,7 +113,6 @@ const code = ref(
 );
 
 let editor: monaco.editor.IStandaloneCodeEditor;
-
 onMounted(() => {
   isDark.value = false;
   if (!editorContainer.value) return;
@@ -100,11 +137,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', handleResize);
-});
-
-onBeforeUnmount(() => {
   editor?.dispose();
+
+  window.removeEventListener('resize', handleResize);
 });
 
 /// util functions
@@ -131,7 +166,7 @@ const loadConflictSources = async () => {
     const files = await window.electron.loadConflictSources(
       topBarStore.directory
     );
-    console.log(files);
+    // console.log(files);
     conflictSources.value = files;
     isLoading.value = false;
   } catch (error) {
@@ -155,6 +190,7 @@ const highlightConflictBlocks = (content: Array<string>) => {
   const conflictBlocks = findConflictBlocks(content);
   // console.log(conflictBlocks);
   const newDecorations = getConflictBlockDecorations(conflictBlocks);
+  // console.log(newDecorations);
   const oldDecorations =
     editor
       .getModel()
@@ -206,6 +242,7 @@ const highlightConflictBlocks = (content: Array<string>) => {
 
       <button
         class="px-1.5 py-1 bg-green-400 text-white rounded-md flex-shrink-0"
+        @click="postMergeScenarioHandler"
       >
         post ms
       </button>
